@@ -5,9 +5,14 @@ Created on Oct 30, 2021
 '''
 
 import re
-from ..parser import TextFileParser, ffloat, FailedMatchError
+from ..parser import TextFileParser, ffloat
+from ..data.calc import Calculation, CalcType
+from ..data.method import QMMethod
+from ..data.geom import Geometry, GeometrySequence, normalize_atoms
+from ..data.helpers import normalize_multiplicity
 
-import numpy as np
+
+import numpy as np, pandas as pd
 
 # Much faster than numpy.loadtxt
 def _read_positions_py(source, natoms):
@@ -77,18 +82,26 @@ class MopacParser:
     re_job_time = re.compile(r'JOB TIME:\s+(\S+)')
     
     def __init__(self, outfile, logfile=None, auxfile=None):
-        self.provenance = {}
         self._parse_cache = {} # intermediate information
         self.outfile = TextFileParser(outfile)
         self.logfile = TextFileParser(logfile) if logfile else None
         self.auxfile = TextFileParser(auxfile) if auxfile else None
+        
+        # Calculation(s)
+        self.calculation = Calculation(method=QMMethod())
+        self.calculation.provenance['engine'] = 'mopac'
+        # A copy stored here so that we can replace it with higher-precision data later if
+        # possible
+        self.initial_geometry = None
+        self.final_geometry = None 
+        
         self.geoms = []
-        self.opt_energies = []
-        self.opt_grads = []
         
     def parse(self):
         self.parse_prelude()
         self.parse_initial_geometry()
+        
+        self.calculation.calc_type = CalcType.ENERGY
     
         # Skip extra Cartesian block if present
         if self.outfile.test_lookahead(re.compile('CARTESIAN COORDINATES'), 5):
@@ -99,35 +112,40 @@ class MopacParser:
             self.outfile.scan_and_dispatch([(self.re_begin_opt, self.parse_opt),
                                             (self.re_job_time, self.parse_time)])
             
+        if self.calculation.calc_type == CalcType.OPTIMIZATION:
+            self.calculation.geometries = self.geoms
+        else:
+            self.calculation.geometries = [self.initial_geometry]
+             
     def parse_prelude(self):
         m = self.outfile.discard_to_match(self.re_mopac_version)
-        self.provenance['version'] = m.group(1).strip()
+        self.calculation.provenance['version'] = m.group(1).strip()
         
         m = self.outfile.discard_to_match(self.re_prelude_header)
-        self.provenance['date'] = m.group(1).strip()
+        self.calculation.provenance['date'] = pd.to_datetime(m.group(1).strip())
         
         m = self.outfile.discard_to_match(self.re_prelude_keyword)
-        self._parse_cache['method'] = m.group(1)
+        self.calculation.method.name = m.group(1)
         
         m = self.outfile.discard_to_match(self.re_prelude_keyword)
-        self._parse_cache['multiplicity'] = m.group(1)
+        self.calculation.method.multiplicity = normalize_multiplicity(m.group(1))
         
         m = self.outfile.discard_to_match(self.re_system_charge)
-        self._parse_cache['charge'] = int(m.group(1))
+        self.calculation.method.charge = int(m.group(1))
         
         # Process any remaining echoed keywords
         # Need to do this for PRTXYZ
         m = self.outfile.discard_to_match(self.re_prelude_keyword)
-        self._parse_cache['addtl_keywords'] = [m.group(1)]
+        self.calculation.method.additional_keywords.append(m.group(1))
         while not self.outfile.matches(self.re_section_break):
             line = self.outfile.readline()
             m = self.re_prelude_keyword.search(line)
             if m:
-                self._parse_cache['addtl_keywords'].append(m.group(1))
+                self.calculation.method.additional_keywords.append(m.group(1))
         self.outfile.discard_to_match(self.re_section_break)
         
-        self.provenance['keyword_line'] = self.outfile.readline().strip()
-        self.provenance['title'] = self.outfile.readline().strip()
+        self.calculation.provenance['keyword_line'] = self.outfile.readline().strip()
+        self.calculation.provenance['title'] = self.outfile.readline().strip()
         
         self.outfile.skip_blanks()
         # Ready for geometry
@@ -155,18 +173,17 @@ class MopacParser:
         
         atoms = []
         coords = []
-        
-        line = self.outfile.readline()
-        while line.strip() != '':
-            fields = line.split()
+    
+        while self.outfile.readline(strip=True):
+            fields = self.outfile.last_line.strip().split()
             atoms.append(fields[1])
             coords.append((float(fields[2]), float(fields[4]), float(fields[6])))
             
-            line = self.outfile.readline()
-            
         coords = np.array(coords, dtype=np.float_)
-        self.atoms = atoms
-        self.initial_coords = coords
+        atoms = normalize_atoms(atoms)
+            
+        self.initial_geometry = Geometry(atoms, coords)
+
         
     def parse_opt(self, m, line):
         '''Parse an optimization sequence'''
@@ -178,33 +195,34 @@ class MopacParser:
  CYCLE:     4 TIME:   7.332 TIME LEFT:  2.00D  GRAD.:   830.612 HEAT: -5761.701
  CYCLE:     5 TIME:   7.359 TIME LEFT:  2.00D  GRAD.:   625.857 HEAT: -6042.301'''
         
+        self.calculation.calc_type = CalcType.OPTIMIZATION
+        
         energies = []
         grads = []
+        geoms = []
         
         while self.outfile.readline(strip=True):
             fields = self.outfile.last_line.split()
             if fields[0] == 'CYCLE:':
                 grads.append(float(fields[8]))
                 energies.append(float(fields[10]))
-                self.get_log_geom()
+                geoms.append(self.get_log_geom())
             elif fields[0] == 'RESTART':
                 grads.append(float(fields[7]))
                 energies.append(float(fields[9]))
-                self.get_log_geom()
+                geoms.append(self.get_log_geom())
             else:
                 break            
                           
                 
         if self.logfile is not None:
-            self.geoms = np.array(self.geoms)
-            self.opt_energies = np.array(self.opt_energies)
-            self.opt_grads = np.array(self.opt_grads)
+            # Logfile contains initial but not final geometry
+            self.geoms = geoms
+            self.initial_geometry = geoms[0]
         else:
-            self.opt_energies = np.array(energies, dtype=np.float_)
-            self.opt_grads = np.array(grads, dtype=np.float_)
-
-        self.outfile.discard_to_match(re.compile('HEAT'))        
-        if 'PRTXYZ' in self._parse_cache['addtl_keywords']:
+            self.geoms = [self.initial_geometry]
+        
+        if 'PRTXYZ' in map(str.upper, self.calculation.method.additional_keywords):
             self.parse_prtxyz()
     
     def get_log_geom(self):
@@ -212,19 +230,35 @@ class MopacParser:
             return
        
         self.logfile.discard_to_match(self.re_energy_updated)
-        self.opt_energies.append(ffloat(self.logfile.last_match.group(2)))
+        energy = ffloat(self.logfile.last_match.group(2))
         self.logfile.read_and_match(self.re_grad_updated)
-        self.opt_grads.append(ffloat(self.logfile.last_match.group(2)))
+        grad = ffloat(self.logfile.last_match.group(2))
         self.logfile.read_and_match(self.re_geom_updated)
                 
         # Should know an atom count by now
-        natoms = len(self.atoms)
+        natoms = len(self.initial_geometry.atoms)
         coords = read_positions(self.logfile.textfile, natoms)     
-        self.geoms.append(coords)        
+        return Geometry(self.initial_geometry.atoms, coords, {'energy': energy, 'grad': grad})        
         
     def parse_prtxyz(self):
         '''Parse the final geometry in input format'''
         
+        
+        '''\
+          CURRENT BEST VALUE OF HEAT OF FORMATION =  -7309.204109
+ PM6-D3H4 Charge=0 Singlet XYZ PRNT=2 PRTXYZ Threads=1 AUX(6,COMP,PRECISION=8,XP,XS,XW)
+ T+ target product xyz coordinates with 8 angstroms of solvent molecules
+
+  C    79.35223568 +1  34.18884577 +1  48.50904523 +1
+  C    79.16653308 +1  32.68104606 +1  48.36058949 +1
+  C    78.82421764 +1  34.68922348 +1  49.85322545 +1
+  C    80.75316617 +1  34.66567827 +1  48.12519736 +1
+  C    80.24985037 +1  31.80129956 +1  48.29670655 +1
+  C    80.02752032 +1  30.44542088 +1  48.02791793 +1
+'''    
+        
+        self.outfile.discard_to_match(re.compile('HEAT OF FORMATION\s+=\s+(\S+)'))
+        energy = ffloat(self.outfile.last_match.group(1))
         lines = []
         lines.append(self.outfile.readline()) # keywords
         lines.append(self.outfile.readline()) # title
@@ -233,8 +267,25 @@ class MopacParser:
             lines.append(self.outfile.last_line)
         lines.append('\n')
         
+        # Save input that MOPAC has so nicely prepared for us
         self.next_job_input=''.join(lines)
+        natoms = len(self.initial_geometry.atoms)
+        coords = np.empty((natoms, 3), dtype=np.float_)
+        
+        # Parse final geometry
+        for i, line in enumerate(lines[3:3+natoms]):
+            line = line.strip()
+            assert line != ''
+            
+            fields = line.split()
+            coords[i, 0] = float(fields[1])
+            coords[i, 1] = float(fields[3])
+            coords[i, 2] = float(fields[5])
+    
+        self.final_geometry = Geometry(self.initial_geometry.atoms, coords, 
+                                       properties={'energy': energy,
+                                                   'grad': None})
     
     def parse_time(self, m, line):
-        self.provenance['jobtime'] = float(m.group(1))
+        self.calculation.provenance['jobtime'] = float(m.group(1))
         

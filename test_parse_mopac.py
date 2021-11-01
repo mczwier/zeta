@@ -22,15 +22,12 @@ auxfile = open(args.auxfile, 'rt') if args.auxfile else None
 p = MopacParser(outfile, logfile, auxfile)
 p.parse()
 
-pprint(p.provenance)
-pprint(p._parse_cache)
-print(p.atoms)
-pprint(p.initial_coords)
+pprint(p.calculation)
+pprint(p.calculation.provenance)
+pprint(p.initial_geometry)
 
 try:
-    pprint(p.opt_energies)
-    pprint(p.opt_grads)
-    #pprint(p.next_job_input)
-    print(p.geoms.shape)
+    pprint(p.geoms[:5])
+    pprint(p.geoms[-5:])
 except (NameError,AttributeError):
     pass

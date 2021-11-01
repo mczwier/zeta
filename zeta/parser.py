@@ -18,6 +18,9 @@ class FailedMatchError(ParseError):
     pass
 
 class TextFileParser:
+    '''A line-buffering text file parser. Stream-compatible. Lookaheads cache
+    lines. Last line read and last regexp matched are stored for convenience.
+    '''
     def __init__(self, textfile):
         self.textfile = textfile
         
