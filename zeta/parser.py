@@ -258,13 +258,7 @@ class TextFileParser:
         '''Read and discard `nlines` lines'''
         for _ in range(nlines):
             self.nextline()
-        
-    def pushback(self):
-        '''Push the current line back into the buffer.'''
-        self._buffer.appendleft((self.line, self.linenum))
-        self.line = None
-        self.linenum = -1
-            
+                    
     def scan_and_dispatch(self, dispatch_table):
         '''Given a list of (regexp, fn) pairs, scan until at least one regexp
         matches, then dispatch to function as fn(self)'''

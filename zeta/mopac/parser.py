@@ -233,18 +233,21 @@ class MopacParser:
         
         atoms = []
         coords = []
-    
-        self.outfile.pushback()
-        while self.outfile.read_until_match(whitespace_only):
+
+        while True:
             fields = self.outfile.line.strip().split()
+            print(fields)
             atoms.append(fields[1])
             coords.append((float(fields[2]), float(fields[4]), float(fields[6])))
+            if self.outfile.read_until_match(whitespace_only):
+                continue
+            else:
+                break
             
         coords = np.array(coords, dtype=np.float_)
         atoms = normalize_atoms(atoms)
             
         self.initial_geometry = Geometry(atoms, coords)
-        print(self.initial_geometry)
 
     def parse_initial_internal(self):
         # for now, skip to Cartesians
@@ -339,7 +342,6 @@ class MopacParser:
         
         initial_point = True
         while self.outfile.testp_within_next(self.re_opt_cycle_begin, 11):
-            print(len(self.geoms), self.outfile.linenum, repr(self.outfile.line))
             self.geoms.append(self.parse_flepo_structure(initial_point=initial_point))
             initial_point = False        
         
