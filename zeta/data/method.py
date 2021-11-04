@@ -8,7 +8,7 @@ Created on Oct 31, 2021
 class Method:
     def __init__(self):
         self.name = None
-        
+        self.details = {}
 
 class QMMethod(Method):    
     def __init__(self):
@@ -18,5 +18,6 @@ class QMMethod(Method):
         self.basis_name = None
         self.aux_basis_names = {}
         self.additional_keywords = []
+                
         
         

@@ -5,7 +5,7 @@ Created on Oct 30, 2021
 '''
 
 import re
-from ..parser import TextFileParser, ffloat
+from ..parser import TextFileParser, ffloat, RegexpMatch, ContainsText, whitespace_only
 from ..data.calc import Calculation, CalcType
 from ..data.method import QMMethod
 from ..data.geom import Geometry, GeometrySequence, normalize_atoms
@@ -18,26 +18,38 @@ import numpy as np, pandas as pd
 def _read_positions_py(source, natoms):
     coords = np.empty((natoms, 3), dtype=np.float64)
     
+    # field length and boundary positions
+    fieldlen = 0
+    b1 = 0
+    b2 = 0
+    b3 = 0
+    
     for iatom in range(0, natoms):
         line = source.readline()
+        if not fieldlen:
+            fieldlen = (len(line)-1)//3
+            b1 = fieldlen
+            b2 = 2*fieldlen
+            b3 = 3*fieldlen
 
-        coords[iatom,0] = float(line[0:18])
-        coords[iatom,1] = float(line[18:36])
-        coords[iatom,2] = float(line[36:54])
+        coords[iatom,0] = float(line[0:b1])
+        coords[iatom,1] = float(line[b1:b2])
+        coords[iatom,2] = float(line[b2:b3])
         
     return coords
 read_positions = _read_positions_py
 
-# cython is a factor of three improvement
+#cython is a factor of three improvement
 try:
     import pyximport
     pyximport.install(inplace=True, language_level=3)
     from ._parsext import _assign_positions_cy
-    
+
     def _read_positions_cy(source, natoms):
         coords = np.empty((natoms,3), dtype=np.float64)
         lines = [source.readline() for _i in range(natoms) ]
-        _assign_positions_cy(lines, natoms, coords)
+        fieldwidth = (len(lines[0]) - 1)//3
+        _assign_positions_cy(lines, natoms, fieldwidth, coords)
         return coords
     read_positions = _read_positions_cy
 except:
@@ -66,26 +78,45 @@ except:
 #    pass
 
 class MopacParser:
-    re_section_break = re.compile(r'\*\*\*')
-    re_mopac_version = re.compile(r'Version: (\S+)')
-    re_prelude_header = re.compile(r'CALCULATION DONE:\s+([^\*]+)')
-    re_prelude_keyword = re.compile(r'\*\s+(\S+)')
-    re_system_charge = re.compile(r'CHARGE ON SYSTEM = (\S+)')
+    m_section_break = ContainsText('***')
+    re_mopac_version = RegexpMatch(r'Version: (\S+)')
+    re_prelude_header = RegexpMatch(r'CALCULATION DONE:\s+([^\*]+)')
+    re_prelude_keyword = RegexpMatch(r'\*\s+(\S+)')
+    re_system_charge = RegexpMatch(r'CHARGE ON SYSTEM = (\S+)')
 
-    re_begin_opt = re.compile(r'Geometry optimization')    
+
+    # Optimization
+    re_begin_opt = RegexpMatch(r'Geometry optimization using (\S+)')
     
+    # FLEPO
+    re_opt_cycle_begin = RegexpMatch(r'AT THE BEGINNING OF CYCLE\s*(\S+)\s*THE FUNCTION VALUE IS\s*(\S+)')    
+    re_opt_cycle_gradnorm = RegexpMatch(r'GRADIENT NORM\s*=\s*(\S+)')
+    re_flepo_coord_line = RegexpMatch('XPARAM')
+    re_flepo_grad_line = RegexpMatch('GRAD')
+    
+    
+    # TIME LEFT:  1.92D  GRAD.:    29.945 HEAT: -7294.364
+    re_opt_cycle_end = RegexpMatch(r'GRAD\.:\s*(\S+)\s+HEAT:\s*(\S+)')
+    
+    # Aux file
     # HEAT_OF_FORM_UPDATED:KCAL/MOL=-0.57545763423410D+04
-    re_energy_updated = re.compile(r'HEAT_OF_FORM_UPDATED:([^=]+)=(\S+)') 
-    re_grad_updated = re.compile(r'GRADIENT_UPDATED:([^=]+)=(\S+)')
-    re_geom_updated = re.compile(r'ATOM_X_UPDATED')
+    re_aux_geom = RegexpMatch('ATOM_X')
+    re_energy_updated = RegexpMatch(r'HEAT_OF_FORM_UPDATED:([^=]+)=(\S+)') 
+    re_grad_updated = RegexpMatch(r'GRADIENT_UPDATED:([^=]+)=(\S+)')
+    re_geom_updated = RegexpMatch(r'ATOM_X_UPDATED')
 
-    re_job_time = re.compile(r'JOB TIME:\s+(\S+)')
+    re_job_time = RegexpMatch(r'JOB TIME:\s+(\S+)')
     
-    def __init__(self, outfile, logfile=None, auxfile=None):
+    def __init__(self, outfile, auxfile=None, auxnfile=None):
         self._parse_cache = {} # intermediate information
         self.outfile = TextFileParser(outfile)
-        self.logfile = TextFileParser(logfile) if logfile else None
         self.auxfile = TextFileParser(auxfile) if auxfile else None
+        
+        # Confusingly, an AUX-format geometry trace can be put in a DIFFERENT
+        # aux file. So for some jobs, auxfile and auxnfile are the same (only AUX
+        # is specified, without a file number), and in others, they may be different
+        # [AUX(n,...) is specified]
+        self.auxnfile = TextFileParser(auxnfile) if auxnfile else self.auxfile
         
         # Calculation(s)
         self.calculation = Calculation(method=QMMethod())
@@ -99,18 +130,21 @@ class MopacParser:
         
     def parse(self):
         self.parse_prelude()
+        self.calculation.calc_type = CalcType.ENERGY
+        
+        self.outfile.discard_while_match(whitespace_only)
+        
         self.parse_initial_geometry()
         
-        self.calculation.calc_type = CalcType.ENERGY
+        
+        # Skip extra Cartesian block if present, as it likely has lower
+        # precision than the geometry just read
+        if self.outfile.testp_within_next(ContainsText('CARTESIAN COORDINATES'), 5):
+            self.outfile.discard_until_match(ContainsText('1'))
+            self.outfile.discard_until_match(whitespace_only)
     
-        # Skip extra Cartesian block if present
-        if self.outfile.test_lookahead(re.compile('CARTESIAN COORDINATES'), 5):
-            self.outfile.discard_to_match(re.compile('1'))
-            self.outfile.skip_to_blank()
-    
-        while self.outfile.peek():
-            self.outfile.scan_and_dispatch([(self.re_begin_opt, self.parse_opt),
-                                            (self.re_job_time, self.parse_time)])
+        self.outfile.scan_and_dispatch([(self.re_begin_opt, self.parse_opt),
+                                        (self.re_job_time, self.parse_time)])
             
         if self.calculation.calc_type == CalcType.OPTIMIZATION:
             self.calculation.geometries = self.geoms
@@ -118,43 +152,45 @@ class MopacParser:
             self.calculation.geometries = [self.initial_geometry]
              
     def parse_prelude(self):
-        m = self.outfile.discard_to_match(self.re_mopac_version)
-        self.calculation.provenance['version'] = m.group(1).strip()
+        self.outfile.discard_until_match(self.re_mopac_version)
+        self.calculation.provenance['version'] = self.outfile.presult[1].strip()
         
-        m = self.outfile.discard_to_match(self.re_prelude_header)
-        self.calculation.provenance['date'] = pd.to_datetime(m.group(1).strip())
+        self.outfile.discard_until_match(self.re_prelude_header)
+        self.calculation.provenance['date'] = pd.to_datetime(self.outfile.presult[1].strip())
         
-        m = self.outfile.discard_to_match(self.re_prelude_keyword)
-        self.calculation.method.name = m.group(1)
+        self.outfile.discard_until_match(self.re_prelude_keyword)
+        self.calculation.method.name = self.outfile.presult[1]
         
-        m = self.outfile.discard_to_match(self.re_prelude_keyword)
-        self.calculation.method.multiplicity = normalize_multiplicity(m.group(1))
+        self.outfile.discard_until_match(self.re_prelude_keyword)
+        self.calculation.method.multiplicity = normalize_multiplicity(self.outfile.presult[1])
         
-        m = self.outfile.discard_to_match(self.re_system_charge)
-        self.calculation.method.charge = int(m.group(1))
+        self.outfile.discard_until_match(self.re_system_charge)
+        self.calculation.method.charge = int(self.outfile.presult[1].strip())
         
         # Process any remaining echoed keywords
         # Need to do this for PRTXYZ
-        m = self.outfile.discard_to_match(self.re_prelude_keyword)
-        self.calculation.method.additional_keywords.append(m.group(1))
-        while not self.outfile.matches(self.re_section_break):
-            line = self.outfile.readline()
-            m = self.re_prelude_keyword.search(line)
-            if m:
-                self.calculation.method.additional_keywords.append(m.group(1))
-        self.outfile.discard_to_match(self.re_section_break)
+        self.outfile.discard_until_match(self.re_prelude_keyword)
+        self.calculation.method.additional_keywords.append(self.outfile.presult[1])
+        
+        
+        while self.outfile.read_until_match(self.m_section_break):
+            if self.outfile.testp(self.re_prelude_keyword):
+                self.calculation.method.additional_keywords.append(self.outfile.presult[1])
         
         self.calculation.provenance['keyword_line'] = self.outfile.readline().strip()
         self.calculation.provenance['title'] = self.outfile.readline().strip()
         
-        self.outfile.skip_blanks()
+        
         # Ready for geometry
+        
         
     def parse_initial_geometry(self):
         '''Parse initial geometry'''
                 
              
-        '''   ATOM   CHEMICAL          X               Y               Z
+        # Cartesian coordinates
+        '''\
+   ATOM   CHEMICAL          X               Y               Z
   NUMBER   SYMBOL      (ANGSTROMS)     (ANGSTROMS)     (ANGSTROMS)
  
      1       C         79.07400000  *  34.56300000  *  48.37700000  *
@@ -163,19 +199,44 @@ class MopacParser:
      4       C         80.50100000  *  34.90900000  *  48.04300000  *
      5       C         79.90000000  *  32.14800000  *  47.73400000  *
 '''
+   
+        # Internal coordinates
+        '''\
+  ATOM    CHEMICAL      BOND LENGTH      BOND ANGLE     TWIST ANGLE 
+ NUMBER    SYMBOL       (ANGSTROMS)      (DEGREES)       (DEGREES) 
+   (I)                     NA:I           NB:NA:I       NC:NB:NA:I       NA    NB    NC 
+     1       C          0.00000000       0.0000000       0.0000000        0     0     0
+     2       C          1.52266930  *    0.0000000       0.0000000        1     0     0
+     3       C          1.39620180  *  120.6151100  *    0.0000000        2     1     0
+     4       C          1.39240400  *  120.1550500  *  177.5468800  *     3     2     1
+     5       C          1.39378300  *  120.0936200  *   -0.5905398  *     4     3     2
+     6       C          1.39331810  *  119.8763900  *   -0.4477492  *     5     4     3
+     7       C          1.39283760  *  120.0707000  *    0.4505725  *     6     5     4
+     8       H          1.09211460  *  119.7804000  * -179.0000900  *     7     6     5
+'''     
+                
+        assert 'ATOM' in self.outfile.line
+                
+        if 'Y' in self.outfile.line:
+            self.parse_initial_cartesian()
+        elif 'ANGLE' in self.outfile.line:
+            self.parse_initial_internal()
+            
+        # We've scanned through the output file to the appropriate point, but
+        # if the aux file is present, we can use it to get higher precision
+        # if the aux file was written with sufficient precision.
+        # Maybe add a "prefer aux file" option
         
-        assert 'ATOM' in self.outfile.peek()
-        assert 'Y' in self.outfile.peek()
-        
-        self.outfile.readline()
-        self.outfile.readline()
-        self.outfile.skip_blanks()
+    def parse_initial_cartesian(self):
+        self.outfile.discardn(2)
+        self.outfile.discard_while_match(whitespace_only)
         
         atoms = []
         coords = []
     
-        while self.outfile.readline(strip=True):
-            fields = self.outfile.last_line.strip().split()
+        self.outfile.pushback()
+        while self.outfile.read_until_match(whitespace_only):
+            fields = self.outfile.line.strip().split()
             atoms.append(fields[1])
             coords.append((float(fields[2]), float(fields[4]), float(fields[6])))
             
@@ -183,10 +244,172 @@ class MopacParser:
         atoms = normalize_atoms(atoms)
             
         self.initial_geometry = Geometry(atoms, coords)
+        print(self.initial_geometry)
 
+    def parse_initial_internal(self):
+        # for now, skip to Cartesians
         
-    def parse_opt(self, m, line):
+        self.outfile.discard_until_match(ContainsText('CARTESIAN'))
+        self.outfile.discardn(3)
+        
+        atoms = []
+        coords = []
+        while self.outfile.read_until_match(whitespace_only):
+            fields = self.outfile.line.strip().split()
+            atoms.append(fields[1])
+            coords.append((float(fields[2]), float(fields[3]), float(fields[4])))
+
+        coords = np.array(coords, dtype=np.float_)
+        atoms = normalize_atoms(atoms)
+            
+        self.initial_geometry = Geometry(atoms, coords)
+            
+        
+    def parse_opt(self, _parser):
         '''Parse an optimization sequence'''
+        self.calculation.calc_type = CalcType.OPTIMIZATION
+        self.calculation.method.details['opt_algorithm'] = self.outfile.presult[1]
+        
+        # Several different output formats are possible:
+        # FLEPO reports everything in the output file
+        # non-FLEPO reports everything in the log file
+        # Who knows where the aux file fits in?
+        
+        if self.outfile.testp_within_next(self.re_opt_cycle_begin, 7):
+            self.parse_opt_flepo()
+        else:
+            self.parse_opt_abbrev()
+        
+        
+    def parse_opt_flepo(self):
+        '''Parse an optimization with intermediate results in FLEPO format'''
+        
+        '''\
+ AT THE BEGINNING OF CYCLE    1  THE FUNCTION VALUE IS    169.213512
+  THE CURRENT POINT IS ...
+  GRADIENT NORM =   262.5702
+  ANGLE COSINE =    0.3110
+  THE CURRENT POINT IS ...
+
+
+    I           1          2          3          4          5          6
+  XPARAM(I)    0.0100     0.0100    -0.0100     1.5171     0.0100    -0.0100
+  GRAD  (I)   -2.6168    -0.2773    15.2831    -7.5808     5.4951     4.1743
+  PVECT (I)    0.008330   0.000183  -0.013098   0.040203  -0.003942  -0.022138
+
+
+    I           7          8          9         10         11         12
+  XPARAM(I)    2.2082     1.2072    -0.0100     3.5906     1.2072    -0.0100
+  GRAD  (I)    4.3132    -4.4019    -1.1382   -11.7968    -5.2627    -0.9246
+  PVECT (I)   -0.009302   0.007961   0.008486   0.062562   0.008574   0.008385
+'''
+        
+        # above: beginning of cycle, below: end of cycle
+        
+        '''\
+    I         103        104        105        106        107        108
+  XPARAM(I)   -0.4983    -0.7413     1.1490     0.2465    -1.1342     1.9429
+  GRAD  (I)  143.1710   -50.1257   119.0323   -96.0928    46.1118  -100.2140
+  PVECT (I)   -0.019338   0.013849  -0.015626   0.015420  -0.013403   0.013869
+
+
+    I         109        110        111
+  XPARAM(I)    0.9712    -1.5072     2.7170
+  GRAD  (I)  -36.4285    30.8778   -59.8688
+  PVECT (I)    0.044993  -0.073390   0.061366
+  -ALPHA.P.G =         26.345300
+
+
+           NUMBER OF COUNTS =     3         COS    =     0.3110
+  ABSOLUTE  CHANGE IN X     =     0.115902  ALPHA  =     0.3593
+  PREDICTED CHANGE IN F     =   -26.35      ACTUAL =   -4.502    
+  GRADIENT NORM             =    231.7    
+
+
+ CYCLE:     1 TIME:   0.211 TIME LEFT:  2.00D  GRAD.:   231.723 HEAT:  164.7111
+'''
+               
+        # The initial point of the optimization is reflected in the output file
+        # but not the aux file. The optimization initial point appears to be 
+        # adjusted from the initial coordinates.
+        # We have to get the very first set of the coordinates (and associated
+        # energy and gradient norm) from the output file, and then we can switch
+        # to the aux file for geometries, energies, and gradient norms, but the
+        # gradient itself appears to have to come from the output file.
+        
+        initial_point = True
+        while self.outfile.testp_within_next(self.re_opt_cycle_begin, 11):
+            print(len(self.geoms), self.outfile.linenum, repr(self.outfile.line))
+            self.geoms.append(self.parse_flepo_structure(initial_point=initial_point))
+            initial_point = False        
+        
+        
+    def parse_flepo_structure(self, initial_point):
+        '''Parse a structure from output and (if applicable) aux file.
+        The first point is not stored in the aux file, so initial_point==True
+        prevents attempting to read the geometry from the aux file.
+        In all cases, the gradient is read from the output file'''
+        
+        
+        
+        all_coords = []
+        all_grads = []
+        natoms = len(self.initial_geometry.atoms)
+        
+        # Process coordinates in output file if we are on the first point
+        # (for which the aux file has no structure) or if there is no aux file
+        process_outfile_coords = True
+        if initial_point is True:
+            process_outfile_coords = True
+        else:
+            if self.auxnfile:
+                process_outfile_coords = False
+            else:
+                process_outfile_coords = True
+
+        self.outfile.discard_until_match(self.re_opt_cycle_begin)
+        energy = ffloat(self.outfile.presult[2])
+        self.outfile.discard_until_match(self.re_opt_cycle_gradnorm)
+        grad_norm = ffloat(self.outfile.presult[1])
+        
+        
+        while True:    
+            self.outfile.discard_until_match(self.re_flepo_coord_line)
+            
+            # Read geometry if it's not in an aux file    
+            if process_outfile_coords:
+                fields = self.outfile.line.split()[1:]
+                all_coords.extend(float(field) for field in fields)
+            
+            # Read gradient
+            self.outfile.read_and_assertp(self.re_flepo_grad_line)
+            fields = self.outfile.line.split()[2:]
+            all_grads.extend(float(field) for field in fields)
+            
+            # Read and discard PVECT
+            self.outfile.nextline()
+            
+            nfields = len(all_grads)
+            if nfields == natoms*3:
+                break
+
+        grad = np.array(all_grads).reshape(natoms, 3)        
+        if process_outfile_coords:
+            coords = np.array(all_coords).reshape(natoms, 3)
+            geom = Geometry(atoms=self.initial_geometry.atoms,
+                            coords=coords)
+            geom.properties['energy'] = energy
+            geom.properties['gradnorm'] = grad_norm
+        else:
+            # Get coordinates from auxnfile
+            geom = self.get_log_geom()
+        
+        geom.properties['gradient'] = grad
+        return geom
+        
+    def parse_opt_abbrev(self):
+        '''Parse an optimization in standard output format, with or without
+        detailed log information.'''
         
         '''          Geometry optimization using L-BFGS
  CYCLE:     1 TIME:  13.977 TIME LEFT:  2.00D  GRAD.:   849.028 HEAT: -5754.576
@@ -195,7 +418,6 @@ class MopacParser:
  CYCLE:     4 TIME:   7.332 TIME LEFT:  2.00D  GRAD.:   830.612 HEAT: -5761.701
  CYCLE:     5 TIME:   7.359 TIME LEFT:  2.00D  GRAD.:   625.857 HEAT: -6042.301'''
         
-        self.calculation.calc_type = CalcType.OPTIMIZATION
         
         energies = []
         grads = []
@@ -215,76 +437,28 @@ class MopacParser:
                 break            
                           
                 
-        if self.logfile is not None:
+        if self.auxnfile is not None:
             # Logfile contains initial but not final geometry
             self.geoms = geoms
             self.initial_geometry = geoms[0]
         else:
             self.geoms = [self.initial_geometry]
-        
-        if 'PRTXYZ' in map(str.upper, self.calculation.method.additional_keywords):
-            self.parse_prtxyz()
-    
+            
     def get_log_geom(self):
-        if not self.logfile:
+        if not self.auxnfile:
             return
        
-        self.logfile.discard_to_match(self.re_energy_updated)
-        energy = ffloat(self.logfile.last_match.group(2))
-        self.logfile.read_and_match(self.re_grad_updated)
-        grad = ffloat(self.logfile.last_match.group(2))
-        self.logfile.read_and_match(self.re_geom_updated)
+        self.auxnfile.discard_until_match(self.re_energy_updated)
+        energy = ffloat(self.auxnfile.presult[2])
+        self.auxnfile.read_and_assertp(self.re_grad_updated)
+        grad = ffloat(self.auxnfile.presult[2])
+        self.auxnfile.read_and_assertp(self.re_geom_updated)
                 
         # Should know an atom count by now
         natoms = len(self.initial_geometry.atoms)
-        coords = read_positions(self.logfile.textfile, natoms)     
-        return Geometry(self.initial_geometry.atoms, coords, {'energy': energy, 'grad': grad})        
+        coords = read_positions(self.auxnfile.textfile, natoms)     
+        return Geometry(self.initial_geometry.atoms, coords, {'energy': energy, 'grad_norm': grad})        
         
-    def parse_prtxyz(self):
-        '''Parse the final geometry in input format'''
-        
-        
-        '''\
-          CURRENT BEST VALUE OF HEAT OF FORMATION =  -7309.204109
- PM6-D3H4 Charge=0 Singlet XYZ PRNT=2 PRTXYZ Threads=1 AUX(6,COMP,PRECISION=8,XP,XS,XW)
- T+ target product xyz coordinates with 8 angstroms of solvent molecules
-
-  C    79.35223568 +1  34.18884577 +1  48.50904523 +1
-  C    79.16653308 +1  32.68104606 +1  48.36058949 +1
-  C    78.82421764 +1  34.68922348 +1  49.85322545 +1
-  C    80.75316617 +1  34.66567827 +1  48.12519736 +1
-  C    80.24985037 +1  31.80129956 +1  48.29670655 +1
-  C    80.02752032 +1  30.44542088 +1  48.02791793 +1
-'''    
-        
-        self.outfile.discard_to_match(re.compile('HEAT OF FORMATION\s+=\s+(\S+)'))
-        energy = ffloat(self.outfile.last_match.group(1))
-        lines = []
-        lines.append(self.outfile.readline()) # keywords
-        lines.append(self.outfile.readline()) # title
-        lines.append(self.outfile.readline()) # geom sep
-        while self.outfile.readline() != ' \n':
-            lines.append(self.outfile.last_line)
-        lines.append('\n')
-        
-        # Save input that MOPAC has so nicely prepared for us
-        self.next_job_input=''.join(lines)
-        natoms = len(self.initial_geometry.atoms)
-        coords = np.empty((natoms, 3), dtype=np.float_)
-        
-        # Parse final geometry
-        for i, line in enumerate(lines[3:3+natoms]):
-            line = line.strip()
-            assert line != ''
-            
-            fields = line.split()
-            coords[i, 0] = float(fields[1])
-            coords[i, 1] = float(fields[3])
-            coords[i, 2] = float(fields[5])
-    
-        self.final_geometry = Geometry(self.initial_geometry.atoms, coords, 
-                                       properties={'energy': energy,
-                                                   'grad': None})
     
     def parse_time(self, m, line):
         self.calculation.provenance['jobtime'] = float(m.group(1))

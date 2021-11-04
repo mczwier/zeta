@@ -3,6 +3,8 @@
 import sys
 import os
 
+import yaml
+
 from pprint import pprint
 
 from zeta.mopac import MopacParser
@@ -11,20 +13,19 @@ from argparse import ArgumentParser
 
 parser = ArgumentParser()
 parser.add_argument('outfile', help='MOPAC primary output')
-parser.add_argument('-L', '--logfile', help='MOPAC detailed logfile')
-parser.add_argument('-A', '--auxfile', help='MOPAC AUX file')
+parser.add_argument('-A', '--auxfile', help='MOPAC AUX file [AUX]')
+parser.add_argument('-An', '--auxnfile', help='MOPAC detailed auxfile [AUX(n,...)], may be stdout/err on some platforms')
 args = parser.parse_args()
 
 outfile = open(args.outfile, 'rt')
-logfile = open(args.logfile, 'rt') if args.logfile else None
 auxfile = open(args.auxfile, 'rt') if args.auxfile else None
+auxnfile = open(args.auxnfile, 'rt') if args.auxnfile else None
 
-p = MopacParser(outfile, logfile, auxfile)
+p = MopacParser(outfile, auxfile, auxnfile)
 p.parse()
 
-pprint(p.calculation)
-pprint(p.calculation.provenance)
-pprint(p.initial_geometry)
+#print(yaml.dump(p.calculation))
+print(yaml.dump(p.calculation.method))
 
 try:
     pprint(p.geoms[:5])
