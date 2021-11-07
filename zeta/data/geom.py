@@ -14,17 +14,15 @@ def normalize_atoms(atoms):
     return np.array([element_label_to_number(atom) for atom in atoms])
 
 class Geometry:
-    def __init__(self, atoms, coords=None, properties=None):
-        self.atoms = atoms 
+    def __init__(self, atoms, coords=None, property_sets = None):
+        self.atoms = atoms # atomic numbers
         self.coords = coords # coordinates of atoms
-        self.properties = properties or {} # properties evaluated at this geometry
-        
+        self.property_sets = property_sets or []
         
     def __repr__(self):
         return '<Geometry at {:#x}, {:d} atoms, first_coords={}>'.format(id(self),
                                                                   len(self.atoms) if self.atoms is not None else 0,
                                                                   self.coords[0] if self.coords is not None else None)
-        
     def has_same_atoms(self, geometry_or_atoms):
         myatoms = np.asarray(self.atoms)
         theiratoms = np.asarray(geometry_or_atoms)

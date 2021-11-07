@@ -158,12 +158,25 @@ class TextFileParser:
         result = predicate(self.line, context={'stream': self.textfile,
                                                'linenum': self.linenum})
         self.presult = result
+        
+    def buffer_is_empty(self):
+        return not bool(self._buffer)
+    
+    def fast_forward_linenum(self, nlines):
+        '''Manually advance the line number by `nlines`, for cases where
+        another routine reads directly from `textfile`.'''
+        assert self.buffer_is_empty()
+        self._stream_last_read = None
+        self._stream_linenum += nlines
+        self.line = None
+        self.linenum = self._stream_linenum
+
+        
 
     def nextline(self):
         '''Read the next line, which comes from the buffer if any lines are
-        buffered, otherwise from the underlying stream. Optionally test a 
-        predicate on the line just read. Returns the line just read, or the 
-        empty string at end-of-file.'''
+        buffered, otherwise from the underlying stream. Returns True if a 
+        a line is read successfully, False otherwise (e.g. end-of-file).'''
         
         if self._buffer:
             line, linenum = self._buffer.popleft()
@@ -178,6 +191,9 @@ class TextFileParser:
         return bool(line)
     
     def readline(self):
+        '''Compatibility function for line-oriented text streams. Reads and
+        returns one line, or the empty string at end-of-file. Not sure this
+        should even exist.'''
         self.nextline()
         return self.line
         
