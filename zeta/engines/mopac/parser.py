@@ -4,13 +4,13 @@ Created on Oct 30, 2021
 @author: mzwier
 '''
 
-from ..parser import TextFileParser, ffloat, RegexpMatch, ContainsText, whitespace_only
-from ..data.provenance import Provenance
-from ..data.propertyset import PropertySet
-from ..data.calc import Calculation, CalcType
-from ..data.method import Method
-from ..data.geom import Geometry, normalize_atoms
-from ..data.helpers import normalize_multiplicity
+from zeta.parser.textparser import TextFileParser, ffloat, RegexpMatch, ContainsText, whitespace_only
+from zeta.data.provenance import Provenance
+from zeta.data.propertyset import PropertySet
+from zeta.data.calc import Calculation, CalcType
+from zeta.data.method import Method
+from zeta.data.geom import Geometry, normalize_atoms
+from zeta.data.helpers import normalize_multiplicity
 
 
 import numpy as np, pandas as pd
@@ -507,7 +507,10 @@ class MopacParser:
         self.outfile.discard_until_match(ContainsText('COMPUTATION'))
         
         self.final_geometry = self.parse_geometry()
-        self.final_geometry.property_sets[0]['energy'] = energy
+        try:
+            self.final_geometry.property_sets[0]['energy'] = energy
+        except IndexError:
+            self.final_geometry.property_sets.append(PropertySet({'energy': energy}))
 
     def parse_scf_result_auxfile(self, _):
         self.final_geometry = self.parse_aux_geom(self.auxfile, geom_type='final')    

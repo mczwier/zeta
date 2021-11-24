@@ -1,5 +1,4 @@
 import cython
-from libc.stdlib cimport atof
 
 @cython.boundscheck(False)
 @cython.wraparound(False)

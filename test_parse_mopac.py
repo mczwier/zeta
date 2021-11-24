@@ -7,7 +7,7 @@ import yaml
 
 from pprint import pprint
 
-from zeta.mopac import MopacParser
+from zeta.engines.mopac import MopacParser
 
 from argparse import ArgumentParser
 
