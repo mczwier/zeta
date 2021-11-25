@@ -5,11 +5,10 @@ Created on Oct 31, 2021
 '''
 
 from enum import IntEnum
-from .method import Method
-from .provenance import Provenance
 
 class CalcType(IntEnum):
     UNKNOWN = 0
+    OTHER   = 1
     
     ENERGY = 10
     
@@ -26,9 +25,6 @@ class CalcType(IntEnum):
 class Calculation:
     def __init__(self):
         self.calc_type = CalcType.UNKNOWN
-        
-        self.prev = None
-        self.next = None
         
         self.geometries = None
         

@@ -4,6 +4,7 @@ Created on Oct 30, 2021
 @author: mzwier
 '''
 
+from zeta.parser import ParseError
 from zeta.parser.textparser import TextFileParser, ffloat, RegexpMatch, ContainsText, whitespace_only
 from zeta.data.provenance import Provenance
 from zeta.data.propertyset import PropertySet
@@ -294,7 +295,7 @@ class MopacParser:
         '''Parse an optimization sequence'''
         self.calculation.calc_type = CalcType.OPTIMIZATION
         self.method['opt_algorithm'] = self.outfile.presult[1]
-        
+               
         # Several different output formats are possible:
         # FLEPO reports everything in the output file
         # non-FLEPO reports everything in the log file
@@ -302,8 +303,12 @@ class MopacParser:
         
         if self.outfile.testp_within_next(self.re_opt_cycle_begin, 7):
             self.parse_opt_flepo()
-        else:
+        elif self.outfile.testp_within_next(ContainsText('CYCLE'), 5):
+            self.outfile.discard_until_match(ContainsText('CYCLE'))
             self.parse_opt_abbrev()
+        else:
+            # TODO this should be a warning
+            raise ParseError('incomplete/invalid geometry optimization output')
         
         
     def parse_opt_flepo(self):
@@ -448,7 +453,7 @@ class MopacParser:
         energies = []
         grads = []
         geoms = []
-        
+                
         while self.outfile.read_until_match(whitespace_only):
             fields = self.outfile.line.split()
             if fields[0] == 'CYCLE:':

@@ -7,13 +7,12 @@ Created on Oct 30, 2021
 from collections import deque
 import re
 
+from . import ParseError
+
 def ffloat(text):
     '''Convert a Fortran-formatted float string to a float. Also trims
     whitespace. Not exactly fast when called a few million times.'''
     return float(text.strip().replace('D', 'E').replace('d', 'e'))
-    
-class ParseError(RuntimeError):
-    pass
 
 class FailedMatchError(ParseError):
     def __init__(self, text, predicate, result):        
@@ -126,6 +125,7 @@ class TextFileParser:
         self.textfile = textfile
         
         # Buffer for lookaheads
+        # Deque of (linenum, line) pairs
         self._buffer = deque()
         
         # The last line read from the stream/buffer
@@ -153,6 +153,7 @@ class TextFileParser:
         
         if self._debug_firehose:
             print('<<< line {:d} {!r}'.format(self._stream_linenum, self._stream_last_read))
+    
         
     def _apply_predicate(self, predicate):
         result = predicate(self.line, context={'stream': self.textfile,
@@ -171,15 +172,16 @@ class TextFileParser:
         self.line = None
         self.linenum = self._stream_linenum
 
-        
-
     def nextline(self):
         '''Read the next line, which comes from the buffer if any lines are
         buffered, otherwise from the underlying stream. Returns True if a 
         a line is read successfully, False otherwise (e.g. end-of-file).'''
         
         if self._buffer:
-            line, linenum = self._buffer.popleft()
+            linenum, line = self._buffer.popleft()
+            if self._debug_firehose:
+                print('<< unbuffered line {:d} {!r}'.format(linenum, line))
+                print('>> (nextline) current buffer {}'.format(self._buffer))
         else:
             self._stream_readline()
             line = self._stream_last_read
@@ -218,12 +220,14 @@ class TextFileParser:
         try:
             for _ in range(nlines):
                 self.nextline()
-                buffer.append((self.line, self.linenum))
+                buffer.append((self.linenum, self.line))
                 if self.testp(predicate):
                     return True
             return False
         finally:
-            self._buffer.extend(buffer)
+            self._buffer.extendleft(reversed(buffer))
+            if self._debug_firehose:
+                print('>> (testp_within_next) current buffer: {}'.format(self._buffer))                
             
     def assertp_within_next(self, predicate, nlines):
         if not self.testp_within_next(predicate, nlines):
