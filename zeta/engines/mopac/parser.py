@@ -168,7 +168,7 @@ class MopacParser:
                                        properties=self.final_properties)
                 self.steps.append(final_point)
                                     
-            self.calculation = CalcTree(self.steps)    
+            self.calculation = self.steps  
         else:
             if self.final_geometry:
                 calc = CalcStep(provenance=self.provenance,
@@ -180,7 +180,7 @@ class MopacParser:
                                 method=self.method,
                                 geometry=self.initial_geometry,
                                 properties={})
-            self.calculation = CalcTree([calc])
+            self.calculation = [calc]
         
         
     def parse_prelude(self):

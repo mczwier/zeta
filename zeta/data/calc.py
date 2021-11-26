@@ -19,6 +19,7 @@ class CalcTree:
         self.calcs = calcs
         
         # Hints about how to process this tree
+        # Examples might include 'optimization', 'hessian', 'scan'
         self.hints = set(hints) if hints else set()
 
 

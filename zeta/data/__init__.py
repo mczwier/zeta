@@ -1,9 +1,9 @@
 '''Data model.'''
 
 
-from . import calc, geom, helpers, method, elements, io
+from . import calc, geom, helpers, elements, io
 
-from .calc import Calculation, CalcStep
+from .calc import CalcStep
 from .geom import Geometry, normalize_atoms
 from .helpers import normalize_multiplicity
 
