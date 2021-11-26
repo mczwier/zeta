@@ -14,10 +14,9 @@ def normalize_atoms(atoms):
                     dtype=zeta.data.atomicnumber_dtype)
 
 class Geometry:
-    def __init__(self, atoms, coords=None, property_sets = None):
+    def __init__(self, atoms, coords=None):
         self.atoms = atoms # atomic numbers
         self.coords = coords # coordinates of atoms
-        self.property_sets = property_sets or []
         
     def __repr__(self):
         return '<Geometry at {:#x}, {:d} atoms, first_coords={}>'\

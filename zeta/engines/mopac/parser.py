@@ -6,10 +6,7 @@ Created on Oct 30, 2021
 
 from zeta.parser import ParseError
 from zeta.parser.textparser import TextFileParser, ffloat, RegexpMatch, ContainsText, whitespace_only
-from zeta.data.provenance import Provenance
-from zeta.data.propertyset import PropertySet
-from zeta.data.calc import Calculation, CalcType
-from zeta.data.method import Method
+from zeta.data.calc import CalcTree, CalcStep
 from zeta.data.geom import Geometry, normalize_atoms
 from zeta.data.helpers import normalize_multiplicity
 
@@ -122,24 +119,23 @@ class MopacParser:
         self.auxnfile = TextFileParser(auxnfile) if auxnfile else self.auxfile
         
         # Calculation(s)
-        self.provenance = Provenance()
-        self.method = Method()
-        self.calculation = Calculation()
+        self.provenance = {}
+        self.method = {}
+        self.calculation = None
         
         self.provenance['engine'] = 'mopac'
 
         self.initial_geometry = None
-        self.final_geometry = None 
-        self.geoms = []
+        self.final_geometry = None
+        self.final_properties = {} 
+        self.steps = []
         
     def parse(self):
         self.parse_prelude()
-        self.calculation.calc_type = CalcType.ENERGY
         
         self.outfile.discard_while_match(whitespace_only)
         
         self.initial_geometry = self.parse_geometry()
-        
         
         # Skip extra Cartesian block if present, as it likely has lower
         # precision than the geometry just read
@@ -157,21 +153,35 @@ class MopacParser:
         self.finalize_calculation()    
         
     def finalize_calculation(self):
-        if self.calculation.calc_type == CalcType.OPTIMIZATION:
-            self.calculation.geometries = [self.initial_geometry] + self.geoms 
+        
+        if self.steps:
+            # A geometry optimization
+            init_point = CalcStep(provenance=self.provenance,
+                                  method=self.method,
+                                  geometry=self.initial_geometry,
+                                  properties={})
+            self.steps.insert(0, init_point)
             if self.final_geometry:
-                self.calculation.geometries.append(self.final_geometry)
+                final_point = CalcStep(provenance=self.provenance,
+                                       method=self.method,
+                                       geometry=self.final_geometry,
+                                       properties=self.final_properties)
+                self.steps.append(final_point)
+                                    
+            self.calculation = CalcTree(self.steps)    
         else:
             if self.final_geometry:
-                self.calculation.geometries = [self.final_geometry]
+                calc = CalcStep(provenance=self.provenance,
+                                method=self.method,
+                                geometry=self.final_geometry,
+                                properties=self.final_properties)
             else:
-                self.calculation.geometries = [self.initial_geometry]
-            
-        # Same run gets the same provenance and method info
-        for geom in self.calculation.geometries:
-            for ps in geom.property_sets:
-                ps.method = self.method
-                ps.provenance = self.provenance
+                calc = CalcStep(provenance=self.provenance,
+                                method=self.method,
+                                geometry=self.initial_geometry,
+                                properties={})
+            self.calculation = CalcTree([calc])
+        
         
     def parse_prelude(self):
         self.outfile.discard_until_match(self.re_mopac_version)
@@ -293,7 +303,6 @@ class MopacParser:
         
     def parse_opt(self, _parser):
         '''Parse an optimization sequence'''
-        self.calculation.calc_type = CalcType.OPTIMIZATION
         self.method['opt_algorithm'] = self.outfile.presult[1]
                
         # Several different output formats are possible:
@@ -304,7 +313,6 @@ class MopacParser:
         if self.outfile.testp_within_next(self.re_opt_cycle_begin, 7):
             self.parse_opt_flepo()
         elif self.outfile.testp_within_next(ContainsText('CYCLE'), 5):
-            self.outfile.discard_until_match(ContainsText('CYCLE'))
             self.parse_opt_abbrev()
         else:
             # TODO this should be a warning
@@ -369,7 +377,7 @@ class MopacParser:
         
         initial_point = True
         while self.outfile.testp_within_next(self.re_opt_cycle_begin, 11):
-            self.geoms.append(self.parse_flepo_structure(initial_point=initial_point))
+            self.steps.append(self.parse_flepo_structure(initial_point=initial_point))
             initial_point = False        
         
         
@@ -383,6 +391,7 @@ class MopacParser:
         
         all_coords = []
         all_grads = []
+        properties = {}
         natoms = len(self.initial_geometry.atoms)
         
         # Process coordinates in output file if we are on the first point
@@ -397,9 +406,9 @@ class MopacParser:
                 process_outfile_coords = True
 
         self.outfile.discard_until_match(self.re_opt_cycle_begin)
-        energy = ffloat(self.outfile.presult[2])
+        properties['energy']  = ffloat(self.outfile.presult[2])
         self.outfile.discard_until_match(self.re_opt_cycle_gradnorm)
-        grad_norm = ffloat(self.outfile.presult[1])
+        properties['gradient_norm'] = ffloat(self.outfile.presult[1])
         
         
         while True:    
@@ -422,25 +431,24 @@ class MopacParser:
             if nfields == natoms*3:
                 break
 
-        grad = np.array(all_grads).reshape(natoms, 3)        
+        properties['gradient'] = np.array(all_grads).reshape(natoms, 3)
+    
         if process_outfile_coords:
             coords = np.array(all_coords).reshape(natoms, 3)
             geom = Geometry(atoms=self.initial_geometry.atoms,
                             coords=coords)
-            ps = PropertySet()
-            geom.property_sets.append(ps)
-            ps['energy'] = energy
-            ps['gradnorm'] = grad_norm
         else:
             # Get coordinates from auxnfile
-            geom = self.parse_aux_geom(self.auxnfile, geom_type='opt')
+            geom, new_properties = self.parse_aux_geom(self.auxnfile, geom_type='opt')
+            properties.update(new_properties)
         
-        geom.property_sets[0]['gradient'] = grad
-        return geom
-        
+        step = CalcStep(geometry=geom, method=self.method, provenance=self.provenance,
+                        properties = properties)
+        return step
+    
     def parse_opt_abbrev(self):
         '''Parse an optimization in standard output format, with or without
-        detailed log information.'''
+        detailed geometry infor-3mation.'''
         
         '''          Geometry optimization using L-BFGS
  CYCLE:     1 TIME:  13.977 TIME LEFT:  2.00D  GRAD.:   849.028 HEAT: -5754.576
@@ -451,33 +459,41 @@ class MopacParser:
         
         
         energies = []
-        grads = []
-        geoms = []
-                
-        while self.outfile.read_until_match(whitespace_only):
-            fields = self.outfile.line.split()
-            if fields[0] == 'CYCLE:':
-                grads.append(float(fields[8]))
-                energies.append(float(fields[10]))
-                if self.auxnfile:
-                    geoms.append(self.parse_aux_geom(self.auxnfile, geom_type='opt'))
-            elif fields[0] == 'RESTART':
-                grads.append(float(fields[7]))
-                energies.append(float(fields[9]))
-                if self.auxnfile:
-                    geoms.append(self.parse_aux_geom(self.auxnfile, geom_type='opt'))
-            else:
-                break            
+        grad_norms = []
+        steps = []
         
-        self.geoms = geoms      
-                            
+        self.outfile.discard_until_match(self.re_opt_cycle_end)
+        while self.outfile.testp(self.re_opt_cycle_end):
+            energy = float(self.outfile.presult[2])
+            grad_norm = float(self.outfile.presult[1])
+            
+            energies.append(energy)
+            grad_norms.append(grad_norm)
+            
+            if self.auxnfile:
+                geom, props = self.parse_aux_geom(self.auxnfile, geom_type='opt')
+                step = CalcStep(method=self.method, provenance=self.provenance,
+                                geometry=geom, properties=props)
+                steps.append(step)
+                        
+            self.outfile.nextline()
+         
+        if steps:           
+            self.steps = steps
+        else:
+            # No auxfile, no FLEPO, no structures whatsoever
+            # Tag energies and gradients on to final properties
+            self.final_properties['opt_energies'] = energies
+            self.final_properties['opt_grad_norms'] = grad_norms
+
+                      
     def parse_aux_geom(self, parser, geom_type):
         
         # Should know an atom count by now
         natoms = len(self.initial_geometry.atoms)
         
         # Properties/results for this structure
-        properties = PropertySet()
+        properties = {}
         if geom_type == 'opt':
             # Optimization point
             parser.discard_until_match(self.re_energy_updated)
@@ -503,7 +519,7 @@ class MopacParser:
         # Parser has had read natoms lines without knowing about it
         parser.fast_forward_linenum(natoms)
         
-        return Geometry(self.initial_geometry.atoms, coords, [properties])        
+        return Geometry(self.initial_geometry.atoms, coords), properties        
         
     def parse_scf_result_outfile(self, _):
         
@@ -512,13 +528,10 @@ class MopacParser:
         self.outfile.discard_until_match(ContainsText('COMPUTATION'))
         
         self.final_geometry = self.parse_geometry()
-        try:
-            self.final_geometry.property_sets[0]['energy'] = energy
-        except IndexError:
-            self.final_geometry.property_sets.append(PropertySet({'energy': energy}))
+        self.final_properties['energy'] = energy
 
     def parse_scf_result_auxfile(self, _):
-        self.final_geometry = self.parse_aux_geom(self.auxfile, geom_type='final')    
+        self.final_geometry, self.final_properties = self.parse_aux_geom(self.auxfile, geom_type='final')    
     
     def parse_time(self, _):
         self.provenance['jobtime'] = float(self.outfile.presult[1])

@@ -116,10 +116,8 @@ nonempty_line = InvertPredicate(empty_line)
 
 class TextFileParser:
     '''A line-buffering text file parser. Stream-compatible. Lookaheads cache
-    lines. The last line read and the last predicate result (if applicable) are
-    available.
-    
-    Principles: read-and-then-act, not act-then-read, except where obvious
+    lines, so input from compressed sources is feasible.
+    The last line read and the last predicate result (if applicable) are available.
     '''
     def __init__(self, textfile):
         self.textfile = textfile

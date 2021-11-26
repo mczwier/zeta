@@ -36,9 +36,7 @@ p = MopacParser(outfile, auxfile, auxnfile)
 p.parse()
 end = timeit.default_timer()
 
-print('MOPAC parser processed {:d} geometries in {:.6g} seconds'
-      .format(len(p.calculation.geometries),
-              (end-begin)))
+print('MOPAC parse complete ({:.6g} s)'.format(end-begin))
 
 if args.output:
     begin = timeit.default_timer()
