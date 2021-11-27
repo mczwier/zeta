@@ -502,7 +502,7 @@ class MopacParser:
             # No auxfile, no FLEPO, no structures whatsoever
             # Tag energies and gradients on to final properties
             self.final_properties['opt_energies'] = energies
-            self.final_properties['opt_grad_norms'] = grad_norms
+            self.final_properties['opt_gradient_norms'] = grad_norms
 
                       
     def parse_aux_geom(self, parser, geom_type):
@@ -519,7 +519,7 @@ class MopacParser:
         
         
             parser.read_and_assertp(self.re_grad_updated)
-            properties['grad_norm'] = ffloat(parser.presult[2])
+            properties['gradient_norm'] = ffloat(parser.presult[2])
         
             parser.read_and_assertp(self.re_geom_updated)
         elif geom_type == 'final':
@@ -546,7 +546,7 @@ class MopacParser:
                 elif quantity == 'GRADIENT_NORM':
                     grad_norm = ffloat(value)
                     if grad_norm != 0.0: # Rigorous comparison to zero here
-                        properties['grad_norm'] = grad_norm                
+                        properties['gradient_norm'] = grad_norm                
 
         assert parser.buffer_is_empty(), 'cannot raw read with non-empty buffer'
         coords = read_positions(parser.textfile, natoms)
