@@ -104,6 +104,24 @@ class MopacParser:
     re_grad_updated = RegexpMatch(r'GRADIENT_UPDATED:([^=]+)=(\S+)')
     re_geom_updated = RegexpMatch(r'ATOM_X_UPDATED')
     
+    
+    '''\
+ HEAT_OF_FORMATION:KCAL/MOL=+0.15193366221426D+03
+ GRADIENT_NORM:KCAL/MOL/ANGSTROM=+0.00000000000000D+00
+ POINT_GROUP=C1  
+ DIPOLE:DEBYE=+0.28391326652647D+01
+ DIP_VEC:DEBYE[3]= +0.8893395866238D+00 +0.7858261383909D-01 -0.2695101883684D+01
+ AREA:SQUARE ANGSTROMS=+0.29958056218662D+03
+ VOLUME:CUBIC ANGSTROMS=+0.34933917949882D+03
+ IONIZATION_POTENTIAL:EV=+0.94991518326105D+01
+ SPIN_COMPONENT=+0.00000000000000D+00
+ TOTAL_SPIN=+0.00000000000000D+00
+ NUMBER_SCF_CYCLES=1
+ CPU_TIME:SEC=+0.87500000000000D+00
+ MOLECULAR_WEIGHT:AMU=+0.28534760000000D+03'''
+
+    re_aux_line = RegexpMatch(r'\s*([^=]+)=(.*)')
+    
     re_final_energy = RegexpMatch(r'FINAL HEAT OF FORMATION =\s*(\S+)')
 
     re_job_time = RegexpMatch(r'JOB TIME:\s+(\S+)')
@@ -129,7 +147,7 @@ class MopacParser:
         self.final_geometry = None
         self.final_properties = {} 
         self.steps = []
-        
+                
     def parse(self):
         self.parse_prelude()
         
@@ -155,20 +173,13 @@ class MopacParser:
     def finalize_calculation(self):
         
         if self.steps:
-            # A geometry optimization
-            init_point = CalcStep(provenance=self.provenance,
-                                  method=self.method,
-                                  geometry=self.initial_geometry,
-                                  properties={})
-            self.steps.insert(0, init_point)
             if self.final_geometry:
                 final_point = CalcStep(provenance=self.provenance,
                                        method=self.method,
                                        geometry=self.final_geometry,
                                        properties=self.final_properties)
                 self.steps.append(final_point)
-                                    
-            self.calculation = self.steps  
+            self.calculation = self.steps
         else:
             if self.final_geometry:
                 calc = CalcStep(provenance=self.provenance,
@@ -301,14 +312,22 @@ class MopacParser:
         return Geometry(atoms, coords)
             
         
-    def parse_opt(self, _parser):
+    def parse_opt(self, _):
         '''Parse an optimization sequence'''
         self.method['opt_algorithm'] = self.outfile.presult[1]
                
+        # Optimizations appear to start after an initial adjustment, so
+        # record the initial point
+        # Add initial geometry to beginning of step list
+        self.steps = [CalcStep(provenance = self.provenance,
+                               method = self.method,
+                               geometry = self.initial_geometry,
+                               properties = {})]   
+            
         # Several different output formats are possible:
         # FLEPO reports everything in the output file
-        # non-FLEPO reports everything in the log file
-        # Who knows where the aux file fits in?
+        # non-FLEPO reports everything except the adjusted initial point 
+        # in the aux file
         
         if self.outfile.testp_within_next(self.re_opt_cycle_begin, 7):
             self.parse_opt_flepo()
@@ -374,7 +393,7 @@ class MopacParser:
         # energy and gradient norm) from the output file, and then we can switch
         # to the aux file for geometries, energies, and gradient norms, but the
         # gradient itself appears to have to come from the output file.
-        
+                
         initial_point = True
         while self.outfile.testp_within_next(self.re_opt_cycle_begin, 11):
             self.steps.append(self.parse_flepo_structure(initial_point=initial_point))
@@ -385,9 +404,8 @@ class MopacParser:
         '''Parse a structure from output and (if applicable) aux file.
         The first point is not stored in the aux file, so initial_point==True
         prevents attempting to read the geometry from the aux file.
-        In all cases, the gradient is read from the output file'''
-        
-        
+        In all cases, the gradient is read from the output file, as it does 
+        not seem to appear in the aux file.'''
         
         all_coords = []
         all_grads = []
@@ -443,7 +461,7 @@ class MopacParser:
             properties.update(new_properties)
         
         step = CalcStep(geometry=geom, method=self.method, provenance=self.provenance,
-                        properties = properties)
+                        properties = properties, hints=['new_geometry'])
         return step
     
     def parse_opt_abbrev(self):
@@ -473,7 +491,7 @@ class MopacParser:
             if self.auxnfile:
                 geom, props = self.parse_aux_geom(self.auxnfile, geom_type='opt')
                 step = CalcStep(method=self.method, provenance=self.provenance,
-                                geometry=geom, properties=props)
+                                geometry=geom, properties=props, hints=['new_geometry'])
                 steps.append(step)
                         
             self.outfile.nextline()
@@ -506,32 +524,90 @@ class MopacParser:
             parser.read_and_assertp(self.re_geom_updated)
         elif geom_type == 'final':
             # HEAT_OF_FORMATION:KCAL/MOL=+0.15193345362744D+03
+            #parser._debug_firehose = True
             parser.discard_until_match(RegexpMatch(r'HEAT_OF_FORMATION:([^=]+)=(\S+)'))
             properties['energy'] = ffloat(parser.presult[2])
-            parser.discard_until_match(RegexpMatch(r'GRADIENT_NORM:([^=]+)=(\S+)'))
-            properties['grad_norm'] = ffloat(parser.presult[2]) 
             
-            parser.discard_until_match(ContainsText('ATOM_X_OPT:'))
+            while parser.read_until_match(ContainsText('ATOM_X_OPT:')):
+                parser.assertp(self.re_aux_line)
+                fields = parser.presult[1].split(':')
+                if len(fields) == 2:
+                    _unit = fields[1]
+                else:
+                    _unit = None
+                quantity = fields[0]
+                value = parser.presult[2]
                 
+                if quantity == 'DIPOLE':
+                    properties['dipole_magnitude'] = ffloat(value)
+                elif quantity == 'DIP_VEC':
+                    properties['dipole_vector'] = np.fromiter(map(ffloat, value.strip().split()),
+                                                              np.float_)
+                elif quantity == 'GRADIENT_NORM':
+                    grad_norm = ffloat(value)
+                    if grad_norm != 0.0: # Rigorous comparison to zero here
+                        properties['grad_norm'] = grad_norm                
 
         assert parser.buffer_is_empty(), 'cannot raw read with non-empty buffer'
         coords = read_positions(parser.textfile, natoms)
         # Parser has had read natoms lines without knowing about it
         parser.fast_forward_linenum(natoms)
         
+        if geom_type == 'final':
+            # Read charges
+            charges = []
+            parser.discard_until_match(ContainsText('ATOM_CHARGES'))
+            while parser.read_while_match(RegexpMatch('^\s*[+-]')):
+                charges.extend(map(ffloat, parser.line.strip().split()))
+            properties['atomic_charges'] = np.array(charges)
+            
+            # Read bond orders, if possible
+            natoms = len(self.initial_geometry.atoms)
+            orders_tri = []
+            parser.discard_until_match(ContainsText('BOND_ORDERS'))
+            parser.discardn(1)
+            while parser.read_while_match(RegexpMatch('^\s*[0-9]')):
+                orders_tri.extend(map(ffloat, parser.line.strip().split()))
+            orders_tri = np.array(orders_tri)
+            orders = np.zeros((natoms,natoms), dtype=np.float_)
+            orders[np.tril_indices(natoms)] = orders_tri
+            orders[np.triu_indices(natoms)] = orders_tri
+            properties['bond_orders'] = orders
+        
         return Geometry(self.initial_geometry.atoms, coords), properties        
         
     def parse_scf_result_outfile(self, _):
         
+        # We enter having matched re_final_energy ('FINAL HEAT OF FORMATION = (...)') 
+        # so snag that energy
         energy = ffloat(self.outfile.presult[1])
-        
-        self.outfile.discard_until_match(ContainsText('COMPUTATION'))
-        
-        self.final_geometry = self.parse_geometry()
         self.final_properties['energy'] = energy
+        
+        # Skip to end of SCF summary block
+        self.outfile.discard_until_match(ContainsText('COMPUTATION'))
+
+        
+        # Read the final geometry
+        self.final_geometry = self.parse_geometry()        
+        
+        # Read charges and dipole
+        self.outfile.discard_until_match(ContainsText('NET ATOMIC CHARGES AND DIPOLE CONTRIBUTIONS'))
+        self.outfile.discard_until_match(ContainsText('ATOM'))
+        charges = []
+        while self.outfile.read_until_match(ContainsText('DIPOLE')):
+            charges.append(float(self.outfile.line.strip().split()[2]))
+        self.final_properties['atomic_charges'] = np.array(charges)
+        
+        self.outfile.discard_until_match(ContainsText('SUM'))
+        x, y, z, tot = map(ffloat, self.outfile.line.strip().split()[1:])
+        self.final_properties['dipole_vector'] = np.array([x,y,z])
+        self.final_properties['dipole_magnitude'] = tot
 
     def parse_scf_result_auxfile(self, _):
-        self.final_geometry, self.final_properties = self.parse_aux_geom(self.auxfile, geom_type='final')    
+        print('reading from aux')
+        geom, props = self.parse_aux_geom(self.auxfile, geom_type='final')
+        self.final_geometry = geom
+        self.final_properties.update(props)    
     
     def parse_time(self, _):
         self.provenance['jobtime'] = float(self.outfile.presult[1])
