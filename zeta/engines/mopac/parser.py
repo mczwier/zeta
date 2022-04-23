@@ -577,7 +577,7 @@ class MopacParser:
         return Geometry(self.initial_geometry.atoms, coords), properties        
         
     def parse_scf_result_outfile(self, _):
-        
+              
         # We enter having matched re_final_energy ('FINAL HEAT OF FORMATION = (...)') 
         # so snag that energy
         energy = ffloat(self.outfile.presult[1])
@@ -586,7 +586,6 @@ class MopacParser:
         # Skip to end of SCF summary block
         self.outfile.discard_until_match(ContainsText('COMPUTATION'))
 
-        
         # Read the final geometry
         self.final_geometry = self.parse_geometry()        
         
@@ -602,7 +601,7 @@ class MopacParser:
         x, y, z, tot = map(ffloat, self.outfile.line.strip().split()[1:])
         self.final_properties['dipole_vector'] = np.array([x,y,z])
         self.final_properties['dipole_magnitude'] = tot
-
+        
     def parse_scf_result_auxfile(self, _):
         print('reading from aux')
         geom, props = self.parse_aux_geom(self.auxfile, geom_type='final')
