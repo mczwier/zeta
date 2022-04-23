@@ -7,7 +7,8 @@ Created on Oct 31, 2021
 class CalcStep:
     def __init__(self, *, provenance=None, method=None, geometry=None, properties=None, hints=None):
         
-        # Any of these may be references to another CalcStep's corresponding object
+        # Any of these may be references to another CalcStep's corresponding object,
+        # or an independent store 
         self.provenance = provenance or {}
         self.method = method or {}
         self.geometry = geometry
@@ -17,9 +18,9 @@ class CalcStep:
         self.hints = set(hints) if hints else set()
 
 class CalcTree:
-    def __init__(self, calcs, hints=None):
-        # Root calculations
-        self.calcs = calcs
+    def __init__(self, leaves = None, hints=None):
+        # Leaves of this tree
+        self.leaves = leaves if leaves else []
         
         # Hints about how to process this tree
         # Examples might include 'optimization', 'hessian', 'scan'
