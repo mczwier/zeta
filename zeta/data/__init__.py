@@ -3,7 +3,7 @@
 
 from . import calc, geom, helpers, elements, io
 
-from .calc import CalcStep
+from .calc import CalcNode, Provenance
 from .geom import Geometry, normalize_atoms
 from .helpers import normalize_multiplicity
 

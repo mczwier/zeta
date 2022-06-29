@@ -6,7 +6,7 @@ Created on Oct 30, 2021
 
 from zeta.parser import ParseError
 from zeta.parser.textparser import TextFileParser, ffloat, RegexpMatch, ContainsText, whitespace_only
-from zeta.data.calc import CalcTree, CalcStep
+from zeta.data.calc import CalcNode
 from zeta.data.geom import Geometry, normalize_atoms
 from zeta.data.helpers import normalize_multiplicity
 
