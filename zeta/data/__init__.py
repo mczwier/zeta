@@ -1,7 +1,7 @@
 '''Data model.'''
 
 
-from . import calc, geom, helpers, elements, io
+from . import calc, geom, helpers, elements, io, numbers
 
 from .calc import CalcNode, Provenance
 from .geom import Geometry, normalize_atoms

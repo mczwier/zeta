@@ -143,6 +143,10 @@ def element_number_to_symbol(num):
     num = int(num)
     return elements_by_number['symbol'][num]
 
+def element_symbol_to_name(sym):
+    sym = sym.title()
+    return elements_by_symbol['name'][sym]
+
 def element_label_to_number(label):
     '''Attempt to convert a label (name, symbol, or atomic number) to atomic number'''
     
@@ -183,5 +187,3 @@ def element_label_to_number(label):
     
     raise ValueError('could not identify {!r} as an element'.format(label))
         
-        
-    
